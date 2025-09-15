@@ -180,16 +180,19 @@ install_rtklib() {
     [[ -f /sys/firmware/devicetree/base/model ]] && computer_model=$(tr -d '\0' < /sys/firmware/devicetree/base/model)
     # convert "Raspberry Pi 3 Model B plus rev 1.3" or other Raspi model to the variable "Raspberry Pi"
     [ -n "${computer_model}" ] && [ -z "${computer_model##*'Raspberry Pi'*}" ] && computer_model='Raspberry Pi'
-    sbc_array=('Xunlong Orange Pi Zero' 'Raspberry Pi' 'OrangePi Zero3' 'Milk-V')
+    sbc_array=('Xunlong Orange Pi Zero' 'Raspberry Pi' 'OrangePi Zero3' 'Milk-V DuoS')
     #test if computer_model in sbc_array (https://stackoverflow.com/questions/3685970/check-if-a-bash-array-contains-a-value)
     if printf '%s\0' "${sbc_array[@]}" | grep -Fxqz -- "${computer_model}" \
         && [[ -f "${rtkbase_path}"'/tools/bin/rtklib_b34j/'"${arch_package}"'/str2str' ]] \
-        && "${rtkbase_path}"'/tools/bin/rtklib_b34j/'"${arch_package}"/str2str --version > /dev/null 2>&1
+        && "${rtkbase_path}/tools/bin/rtklib_b34j/${arch_package}/str2str" --version > /dev/null 2>&1
     then
       echo 'Copying new rtklib binary for ' "${computer_model}" ' - ' "${arch_package}"
       cp "${rtkbase_path}"'/tools/bin/rtklib_b34j/'"${arch_package}"/str2str /usr/local/bin/
       cp "${rtkbase_path}"'/tools/bin/rtklib_b34j/'"${arch_package}"/rtkrcv /usr/local/bin/
       cp "${rtkbase_path}"'/tools/bin/rtklib_b34j/'"${arch_package}"/convbin /usr/local/bin/
+      chmod +x /usr/local/bin/str2str
+      chmod +x /usr/local/bin/rtkrcv
+      chmod +x /usr/local/bin/convbin
     else
       echo 'No binary available for ' "${computer_model}" ' - ' "${arch_package}" '. We will build it from source'
       _compil_rtklib
@@ -335,44 +338,44 @@ rtkbase_requirements(){
     echo 'Platform:'
     echo $platform
     echo '################################' 
-    if [[$platform =~ 'riscv64' ]]
-        then
+    if [[ $platform =~ 'riscv64' ]]
+    then
       # install system python pre-built packages 
       apt-get "${APT_TIMEOUT}" install -y python3.13-venv
       apt-get "${APT_TIMEOUT}" install -y python3-lxml python3-pystemd python3-cryptography python3-cffi python3-gevent || exit 1
       # create virtual environnement for rtkbase
       sudo -u "${RTKBASE_USER}" python3 -m venv --system-site-packages "${rtkbase_path}"/venv
     fi
-      python_venv="${rtkbase_path}"/venv/bin/python
-      if [[ $platform =~ 'aarch64'  ||  $platform =~ 'x86_64'  ||  $platform =~ 'riscv64' ]]
-        then
-          # More dependencies needed for aarch64 as there is no prebuilt wheel on piwheels.org
-          apt-get "${APT_TIMEOUT}" install -y libssl-dev libffi-dev || exit 1
-      fi      
-      # Copying udev rules
-      [[ ! -d /etc/udev/rules.d ]] && mkdir /etc/udev/rules.d/
-      cp "${rtkbase_path}"/tools/udev_rules/*.rules /etc/udev/rules.d/
-      udevadm control --reload && udevadm trigger
-      # Copying polkitd rules and add rtkbase group
-      echo '################################ 1' 
-      "${rtkbase_path}"/tools/install_polkit_rules.sh "${RTKBASE_USER}"
-      #Copying settings.conf.default as settings.conf
-      if [[ ! -f "${rtkbase_path}/settings.conf" ]]
-      then
-        cp "${rtkbase_path}/settings.conf.default" "${rtkbase_path}/settings.conf"
-      fi
-      #Then launch check cpu temp script for OPI zero LTS
-      source "${rtkbase_path}/tools/opizero_temp_offset.sh"
-      if [[$platform =~ 'riscv64' ]]
-        then
-        #venv module installation
-        sudo -u "${RTKBASE_USER}" "${python_venv}" -m pip install --upgrade pip setuptools wheel  --extra-index-url https://www.piwheels.org/simple
-        sudo -u "${RTKBASE_USER}" "${python_venv}" -m pip install -r "${rtkbase_path}"/web_app/requirements.txt  --extra-index-url https://www.piwheels.org/simple
-      
-        #Installing requirements for Cellular modem. Installing them during the Armbian firstrun doesn't work because the network isn't fully up.
-        sudo -u "${RTKBASE_USER}" "${rtkbase_path}/venv/bin/python" -m pip install nmcli  --extra-index-url https://www.piwheels.org/simple
-        sudo -u "${RTKBASE_USER}" "${rtkbase_path}/venv/bin/python" -m pip install git+https://github.com/Stefal/sim-modem.git
-      if 
+    python_venv="${rtkbase_path}"/venv/bin/python
+    if [[ $platform =~ 'aarch64'  ||  $platform =~ 'x86_64'  ||  $platform =~ 'riscv64' ]]
+    then
+      # More dependencies needed for aarch64 as there is no prebuilt wheel on piwheels.org
+      apt-get "${APT_TIMEOUT}" install -y libssl-dev libffi-dev || exit 1
+    fi      
+    # Copying udev rules
+    [[ ! -d /etc/udev/rules.d ]] && mkdir /etc/udev/rules.d/
+    cp "${rtkbase_path}"/tools/udev_rules/*.rules /etc/udev/rules.d/
+    udevadm control --reload && udevadm trigger
+    # Copying polkitd rules and add rtkbase group
+    echo '################################ 1' 
+    "${rtkbase_path}"/tools/install_polkit_rules.sh "${RTKBASE_USER}"
+    #Copying settings.conf.default as settings.conf
+    if [[ ! -f "${rtkbase_path}/settings.conf" ]]
+    then
+      cp "${rtkbase_path}/settings.conf.default" "${rtkbase_path}/settings.conf"
+    fi
+    #Then launch check cpu temp script for OPI zero LTS
+    source "${rtkbase_path}/tools/opizero_temp_offset.sh"
+    if [[ $platform =~ 'riscv64' ]]
+    then
+      #venv module installation
+      sudo -u "${RTKBASE_USER}" "${python_venv}" -m pip install --upgrade pip setuptools wheel  --extra-index-url https://www.piwheels.org/simple
+      sudo -u "${RTKBASE_USER}" "${python_venv}" -m pip install -r "${rtkbase_path}"/web_app/requirements.txt  --extra-index-url https://www.piwheels.org/simple
+    
+      #Installing requirements for Cellular modem. Installing them during the Armbian firstrun doesn't work because the network isn't fully up.
+      sudo -u "${RTKBASE_USER}" "${rtkbase_path}/venv/bin/python" -m pip install nmcli  --extra-index-url https://www.piwheels.org/simple
+      sudo -u "${RTKBASE_USER}" "${rtkbase_path}/venv/bin/python" -m pip install git+https://github.com/Stefal/sim-modem.git
+    fi
 }
 
 install_unit_files() {
@@ -718,7 +721,7 @@ main() {
     then
       source /etc/environment
     else 
-      export rtkbase_path='rtkbase'
+      export rtkbase_path='rtkbase_riscv'
     fi
   fi
   
