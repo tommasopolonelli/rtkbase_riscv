@@ -22,6 +22,7 @@
 /* Support for MilkV Duo S*/
 #include "wiringx.h"
 
+#include "main.h"
 #include "lis2dh12_reg.h"
 #include "duos_pinmux.h"
 
@@ -67,7 +68,8 @@ void platform_delay(uint32_t ms);
 static void platform_init(void);
 static int32_t lis2dh12_self_test(void);
 static int DEV_Equipment_Testing(void);
-static void DEV_GPIO_Init(void);
+static int DEV_GPIO_Init(void);
+static void Handler(int signo);
 
 /* Main Function  --------------------------------------------------------------*/
 
@@ -147,7 +149,7 @@ int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len)
  * @param  len           number of byte to send
  *
  */
-static void tx_com(uint8_t *tx_buffer, uint16_t len)
+void tx_com(uint8_t *tx_buffer, uint16_t len)
 {
 
 }
@@ -158,7 +160,7 @@ static void tx_com(uint8_t *tx_buffer, uint16_t len)
  * @param  ms        delay in ms
  *
  */
-static void platform_delay(uint32_t ms)
+void platform_delay(uint32_t ms)
 {
 	Debug("Sleep for :%d ms\n", ms);
 	usleep(ms*1000);
@@ -363,7 +365,7 @@ static int DEV_Equipment_Testing(void)
 	return EXIT_SUCCESS;
 }
 
-static void DEV_GPIO_Init(void)
+static int DEV_GPIO_Init(void)
 {
 
     duos_pinmux("B13", "SPI3_SDO");
@@ -386,7 +388,7 @@ static void DEV_GPIO_Init(void)
 
 	digitalWrite(LIS_CS_PIN, HIGH);
 
-	DEV_Delay_ms(1);
+	platform_delay(1);
 
     return EXIT_SUCCESS;
     
@@ -404,7 +406,7 @@ void DEV_Module_Exit(void)
 
 }
 
-void Handler(int signo)
+static void Handler(int signo)
 {
     //System Exit
     printf("\r\nHandler:exit\r\n");
