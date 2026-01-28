@@ -1,0 +1,4 @@
+[submodule "motion_app/lis2dh12-pid"]
+	path = motion_app/lis2dh12-pid
+	url = https://github.com/STMicroelectronics/lis2dh12-pid
+	branch = master
