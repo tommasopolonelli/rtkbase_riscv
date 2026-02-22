@@ -7,8 +7,7 @@
  * @brief   Motion detection implementation using LIS2DH12 accelerometer
  * 
  * @details This module provides functionality for motion detection procedures
- *          utilizing the LIS2DH12 3-axis accelerometer. It includes self-test
- *          capabilities and motion detection algorithms.
+ *          utilizing the LIS2DH12 3-axis accelerometer.
  * 
  * @note    This implementation is part of the rtkbase RISC-V motion application
  * 
@@ -28,7 +27,7 @@
 /* Private macro -------------------------------------------------------------*/
 
 #define DURATION_LSB (100)   //in ms dependent on ODR
-#define THRESHOLD_LSB (15)   //15 mg accuracy
+#define THRESHOLD_LSB (15)   //16 mg accuracy
 
 /* Private variables ---------------------------------------------------------*/
 
@@ -38,6 +37,36 @@
 
 
 /* Main Example --------------------------------------------------------------*/
+/**
+ * @brief Motion detection task for LIS2DH12 accelerometer
+ * 
+ * Initializes and configures the LIS2DH12 MEMS sensor for motion detection.
+ * Sets up interrupt-driven acceleration threshold detection with configurable
+ * event duration and threshold parameters. Continuously monitors sensor data
+ * and processes interrupt events when motion exceeds the specified threshold.
+ * 
+ * The function configures:
+ * - Block Data Update mode for consistent multi-byte reads
+ * - Output Data Rate of 10 Hz
+ * - Full scale range of 2g
+ * - Low power 8-bit resolution mode
+ * - High-pass filter at 0.02 Hz cutoff
+ * - INT1 interrupt pin for motion detection
+ * - Temperature sensor (if ENABLE_TEMPERATURE is defined)
+ * 
+ * @param event_duration_ms Motion event duration in milliseconds. Will be clamped
+ *                           to maximum of 12700 ms (127 * 100 ms LSB) to prevent
+ *                           register saturation
+ * @param event_threshold_mg Acceleration threshold in milliGs. Will be clamped
+ *                           to maximum of 1905 mg (127 * 15 mg LSB) to prevent
+ *                           register saturation
+ * 
+ * @note This function contains an infinite loop and continuously polls the
+ *       INT1 interrupt pin and sensor data registers
+ * @note Requires platform-specific functions: platform_write, platform_read,
+ *       platform_delay, platform_INT_get, tx_com, and Debug
+ * @note Temperature measurement requires ENABLE_TEMPERATURE preprocessor flag
+ */
 void motion_detection_task(uint32_t event_duration_ms, uint32_t event_threshold_mg)
 {
 
@@ -47,11 +76,12 @@ void motion_detection_task(uint32_t event_duration_ms, uint32_t event_threshold_
   dev_ctx.read_reg = platform_read;
   dev_ctx.mdelay = platform_delay;
   dev_ctx.handle = SPI_PORT;
+  lis2dh12_int1_src_t int1_src;
 
   int16_t data_raw_acceleration[3];
   int16_t data_raw_temperature;
   float_t acceleration_mg[3];
-  float_t temperature_degC;
+  float_t temperature_degC=0.0f;
 
   if ((event_duration_ms/DURATION_LSB) > 127){
     /* avoid register sturation */
@@ -72,6 +102,8 @@ void motion_detection_task(uint32_t event_duration_ms, uint32_t event_threshold_
   lis2dh12_temperature_meas_set(&dev_ctx, LIS2DH12_TEMP_ENABLE);
   /* Set device in low power mode with 8 bit resol. */
   lis2dh12_operating_mode_set(&dev_ctx, LIS2DH12_LP_8bit);
+  /* output registers not updated until MSB and LSB have been read */
+  lis2dh12_block_data_update_set(&dev_ctx, 1);
   /* Set device HP filter to 0.02 Hz cut-off */
   lis2dh12_high_pass_bandwidth_set(&dev_ctx, LIS2DH12_AGGRESSIVE);
   lis2dh12_high_pass_mode_set(&dev_ctx, LIS2DH12_NORMAL);
@@ -80,21 +112,33 @@ void motion_detection_task(uint32_t event_duration_ms, uint32_t event_threshold_
   /* Route selected Interrupts to INT1 pin */
   lis2dh12_ctrl_reg3_t int_settings;
   int_settings.i1_ia1 = 1; // Interrupt activity 1 driven to INT1 pin
-  lis2dh12_pin_int1_config_set(&dev_ctx, &int_settings);
+  lis2dh12_pin_int1_config_set(&dev_ctx, &(lis2dh12_ctrl_reg3_t){
+  .i1_click = 0,    .i1_ia1 = 1, // Interrupt activity 1 driven to INT1 pin
+  .i1_ia2 = 0,      .i1_zyxda = 0,
+  .not_used_02 = 0, .i1_wtm = 0,
+  .i1_overrun = 0,  .not_used_01 = 0
+  });
   /* Interrupt 1 pin latched */
   lis2dh12_int1_pin_notification_mode_set(&dev_ctx, LIS2DH12_INT1_LATCHED);
   /* Event acceleration threshold in mg, with a precision of 15 mg per LSB */
   lis2dh12_int1_gen_threshold_set(&dev_ctx, (uint8_t)(event_threshold_mg/THRESHOLD_LSB));
   /* Event duration in multiples of ODR - our case is multiple of 100 ms */
   lis2dh12_int1_gen_duration_set(&dev_ctx, (uint8_t)(event_duration_ms/DURATION_LSB));
+  /* Enable INT1 detection */
+  lis2dh12_int1_gen_conf_set(&dev_ctx, &(lis2dh12_int1_cfg_t){
+    .xlie = 0, .xhie = 1,
+    .ylie = 0, .yhie = 1,
+    .zlie = 0, .zhie = 1,
+    .aoi = 0, ._6d = 0
+  });
 
   /* Dummy read to force the HP filter to the current acceleration value */
   /* This read may be performed anytime it is required to set the orientation/tilt of the device as a reference state
      without waiting for the filter to settle. */
   uint8_t reference;
   lis2dh12_filter_reference_get(&dev_ctx, &reference);
-
-  int platform_INT_get(void)
+  /* Clear INT1 Latch */
+  lis2dh12_int1_gen_source_get(&dev_ctx, &int1_src);
 
   /* Read samples in polling mode (no int) */
   while (1) {
@@ -103,23 +147,30 @@ void motion_detection_task(uint32_t event_duration_ms, uint32_t event_threshold_
     /* Poll for interrupt INT1 */
     if (platform_INT_get()) {
       Debug("----- INT1 ----- \r\n");
-      tx_com(1, TX_NO_ERROR, acceleration_mg, temperature_degC);
-    }
-
-    /* Read output only if new value available */
-    lis2dh12_xl_data_ready_get(&dev_ctx, &reg.byte);
-
-    if (reg.byte) {
-      /* Read accelerometer data */
+      lis2dh12_int1_gen_source_get(&dev_ctx, &int1_src);
       memset(data_raw_acceleration, 0x00, 3 * sizeof(int16_t));
-      lis2dh12_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
-      acceleration_mg[0] = lis2dh12_from_fs2_lp_to_mg(data_raw_acceleration[0]);
-      acceleration_mg[1] = lis2dh12_from_fs2_lp_to_mg(data_raw_acceleration[1]);
-      acceleration_mg[2] = lis2dh12_from_fs2_lp_to_mg(data_raw_acceleration[2]);
-      Debug("Acceleration [mg]:%4.2f\t%4.2f\t%4.2f\r\n",
+
+      /* Read output only if new value available */
+      lis2dh12_xl_data_ready_get(&dev_ctx, &reg.byte);
+
+      if (reg.byte) {
+        /* Read accelerometer data */
+        lis2dh12_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
+        acceleration_mg[0] = lis2dh12_from_fs2_lp_to_mg(data_raw_acceleration[0]);
+        acceleration_mg[1] = lis2dh12_from_fs2_lp_to_mg(data_raw_acceleration[1]);
+        acceleration_mg[2] = lis2dh12_from_fs2_lp_to_mg(data_raw_acceleration[2]);
+        Debug("Acceleration [mg]: %4.2f\t%4.2f\t%4.2f\r\n",
               acceleration_mg[0], acceleration_mg[1], acceleration_mg[2]);
-      tx_com(0, TX_NO_ERROR, acceleration_mg, temperature_degC);
+
+      }
+
+      tx_com(1, TX_NO_ERROR, acceleration_mg, temperature_degC);
+      /* clear INT1 */
+      lis2dh12_int1_gen_source_get(&dev_ctx, &int1_src);
+
     }
+
+#ifdef ENABLE_TEMPERATURE
 
     lis2dh12_temp_data_ready_get(&dev_ctx, &reg.byte);
 
@@ -128,9 +179,14 @@ void motion_detection_task(uint32_t event_duration_ms, uint32_t event_threshold_
       memset(&data_raw_temperature, 0x00, sizeof(int16_t));
       lis2dh12_temperature_raw_get(&dev_ctx, &data_raw_temperature);
       temperature_degC = lis2dh12_from_lsb_lp_to_celsius(data_raw_temperature);
-      Debug("Temperature [degC]:%6.2f\r\n", temperature_degC);
+      Debug("Temperature [degC]: %6.2f\r\n", temperature_degC);
       tx_com(0, TX_NO_ERROR, acceleration_mg, temperature_degC);
     }
+
+#endif
+
+    /* Equivalent to ODR */
+    platform_delay(100);
 
   }
 }

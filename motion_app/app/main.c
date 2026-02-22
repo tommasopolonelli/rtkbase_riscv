@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
+#include <limits.h>
 #include <time.h>
 #include "Debug.h"
 
@@ -57,32 +58,68 @@
 static int32_t lis2dh12_self_test(void);
 static int DEV_Equipment_Testing(void);
 static int DEV_GPIO_Init(void);
+static void platform_init(void);
 static void Handler(int signo);
+static int parse_positive_int(const char *arg, int *out);
+static void print_help(const char *prog);
 
 /* Main Function  --------------------------------------------------------------*/
 
 int main(int argc, char *argv[])
 {
+  int duration_ms = DEFAULT_EVENT_DURATION_MS;
+  int threshold_mg = DEFAULT_EVENT_THRESHOLD_MG;
 
-  /* 1) Setup Ctrl+C handler */
   signal(SIGINT, Handler);
 
-  /* 2) Check for OS and libraries  */
+  /* Help option */
+  if (argc >= 2 &&
+     (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")))
+  {
+    print_help(argv[0]);
+    return EXIT_SUCCESS;
+  }
+
+  /* Parse args */
+  if (argc >= 2)
+  {
+    if (!parse_positive_int(argv[1], &duration_ms))
+    {
+      printf("Error: duration_ms must be a positive integer\n\n");
+      print_help(argv[0]);
+      return EXIT_FAILURE;
+    }
+  }
+
+  if (argc >= 3)
+  {
+    if (!parse_positive_int(argv[2], &threshold_mg))
+    {
+      printf("Error: threshold_mg must be a positive integer\n\n");
+      print_help(argv[0]);
+      return EXIT_FAILURE;
+    }
+  }
+
+  if (argc > 3)
+  {
+    print_help(argv[0]);
+    return EXIT_FAILURE;
+  }
+
   if (DEV_Equipment_Testing() != EXIT_SUCCESS)
   {
     Debug("Library not supported\n");
     return EXIT_FAILURE;
   }
 
-  /* 3) Init sensor and calibration */
   if (lis2dh12_self_test() != EXIT_SUCCESS)
   {
     Debug("lis2dh12 init failed\n");
     return EXIT_FAILURE;
   }
 
-  /* 4) Start motion detection task */
-  motion_detection_task(0, 250); // Example: 0 second duration, 250 mg threshold
+  motion_detection_task(duration_ms, threshold_mg);
 
   return EXIT_SUCCESS;
 }
@@ -144,19 +181,24 @@ int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len)
 void tx_com(uint8_t mov_flag, int err, float *acc_mg, float temp_degC)
 {
 
-    // Use real-time clock for wall timestamp
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+  // Use real-time clock for wall timestamp
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
 
-    printf("{\"ts\":%lld.%09ld,\"movement\":\"%u\",\"err\":\"%d\",
-      \"x_mg\":%4.2f,\"y_mg\":%4.2f,\"z_mg\":%4.2f\",
-      "\"temp\":\"%6.2f\"}\n",
-      (long long)ts.tv_sec, ts.tv_nsec, mov_flag, err,
-      acc_mg[0], acc_mg[1], acc_mg[2], 
-      temp_degC);
+  printf(
+    "{\"ts\":%lld.%09ld,"
+    "\"movement\":\"%u\","
+    "\"err\":\"%d\","
+    "\"x_mg\":%4.2f,"
+    "\"y_mg\":%4.2f,"
+    "\"z_mg\":%4.2f,"
+    "\"temp\":\"%6.2f\"}\n",
+    (long long)ts.tv_sec, ts.tv_nsec, mov_flag, err,
+    acc_mg[0], acc_mg[1], acc_mg[2], 
+    temp_degC);
 
-    // Ensure Python receives the line promptly when piped
-    fflush(stdout);
+  // Ensure Python receives the line promptly when piped
+  fflush(stdout);
 
 }
 
@@ -168,7 +210,7 @@ void tx_com(uint8_t mov_flag, int err, float *acc_mg, float temp_degC)
  */
 void platform_delay(uint32_t ms)
 {
-  Debug("Sleep for :%d ms\n", ms);
+  Debug("Sleep for: %d ms\n", ms);
   usleep(ms * 1000);
 }
 
@@ -231,7 +273,7 @@ static int32_t lis2dh12_self_test(void)
   if (reg.byte != LIS2DH12_ID)
   {
     /* manage here device not found */
-    Debug("Defice not found, read ID :%d \n", reg.byte);
+    Debug("Device not found, read ID: %d \n", reg.byte);
     return EXIT_FAILURE;
   }
 
@@ -500,7 +542,7 @@ static int DEV_GPIO_Init(void)
 
   if (wiringXValidGPIO(LIS_CS_PIN) != 0)
   {
-    Debug("Invalid GPIO %d\n", LIS_INT_PIN);
+    Debug("Invalid GPIO %d\n", LIS_CS_PIN);
     return EXIT_FAILURE;
   }
   pinMode(LIS_CS_PIN, PINMODE_OUTPUT);
@@ -530,4 +572,45 @@ static void Handler(int signo)
   DEV_Module_Exit();
 
   exit(0);
+}
+
+static int parse_positive_int(const char *arg, int *out)
+{
+  char *end;
+  long val;
+
+  if (arg == NULL || *arg == '\0')
+    return 0;
+
+  errno = 0;
+  val = strtol(arg, &end, 10);
+
+  /* Check:
+     - conversion happened
+     - no leftover chars
+     - no overflow
+     - strictly positive
+     - fits in int
+  */
+  if (*end != '\0' || errno != 0 || val <= 0 || val > INT_MAX)
+    return 0;
+
+  *out = (int)val;
+  return 1;
+}
+
+static void print_help(const char *prog)
+{
+  printf("Usage:\n");
+  printf("  %s [duration_ms] [threshold_mg]\n\n", prog);
+  printf("Parameters:\n");
+  printf("  duration_ms   Motion duration in milliseconds (positive integer)\n");
+  printf("  threshold_mg  Motion threshold in mg (positive integer)\n\n");
+  printf("Defaults:\n");
+  printf("  duration_ms  = 0\n");
+  printf("  threshold_mg = 250\n\n");
+  printf("Examples:\n");
+  printf("  %s\n", prog);
+  printf("  %s 100\n", prog);
+  printf("  %s 100 500\n", prog);
 }
